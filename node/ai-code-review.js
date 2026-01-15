@@ -79,5 +79,7 @@ export default async function CodeReview(prompt){
             stop: null
             })
 
-        return chatCompletion.choices[0].message.content
+        let content=chatCompletion.choices[0].message.content
+        let filteredcontent = content.replace(/^```json/, "").replace(/```$/, "").trim();
+        return filteredcontent;
 }
