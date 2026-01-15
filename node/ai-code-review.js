@@ -1,9 +1,29 @@
 // LLM powered Node js code review early stage 
 import { Groq } from 'groq-sdk';
-const groq = new Groq({
-    apiKey:process.env.GROQ_API_KEY
+import { z } from 'zod';
+
+// 1. Define Strict Schema for Node.js Review
+const ReviewSchema = z.object({
+  summary: z.string(),
+  score: z.number().min(1).max(10),
+  node_specific_metrics: z.object({
+    event_loop_safety: z.enum(['Safe', 'At Risk', 'Blocking']),
+    async_consistency: z.boolean(),
+    dependency_health: z.string()
+  }),
+  issues: z.array(z.object({
+    type: z.enum(['bug', 'security', 'performance', 'logic', 'style']),
+    severity: z.enum(['low', 'medium', 'high', 'critical']),
+    line: z.number().nullable(),
+    description: z.string(),
+    suggestion: z.string()
+  })),
+  positive_feedback: z.array(z.string())
 });
 
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY
+});
 const SYSTEMPROMPT = `
 
 AI Senior Node.js Architect
@@ -51,35 +71,64 @@ JSON Specification
 `
 
 
+function sanitizeResponse(content) {
+  return content.replace(/```json|```/g, '').trim();
+}
 
 
-export default async function CodeReview(prompt){
+/**
+ * Perform a code review
+ * @param {string} codeContent - The raw code to review
+ */
 
+export default async function CodeReview(code){
 
-
-
+    if (!process.env.GROQ_API_KEY) throw new Error("Missing API Configuration");
+    try {
     const chatCompletion = await groq.chat.completions.create({
-            messages: [
-                {"role": "system", "content":SYSTEMPROMPT},
-                {"role": "user","content":`
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `Review this node js code : ${code}` }
+      ],
+      model: "moonshotai/kimi-k2-instruct-0905",
+      temperature: 0.2, // Low temperature for high precision
+      max_completion_tokens: 4000,
+      response_format: { type: "json_object" }
+    });
 
-                    Review this code:
-                   ${prompt}
-                `},
-                ],
-            model:"moonshotai/kimi-k2-instruct-0905",
-            temperature: 0.6,
-            max_completion_tokens: 9000,
-            frequency_penalty:0.8,
-            top_p: 1,
-            stream: false,
-            response_format: {
-              type: "json_object"
-            },
-            stop: null
-            })
+    const rawResult = chatCompletion.choices[0]?.message?.content;
+    if (!rawResult) throw new Error("Empty AI Response");
 
-        let content=chatCompletion.choices[0].message.content
-        let filteredcontent = content.replace(/^```json/, "").replace(/```$/, "").trim();
-        return filteredcontent;
+    // 3. Sanitize and Parse
+    const sanitized = sanitizeResponse(rawResult);
+    const jsonParsed = JSON.parse(sanitized);
+
+    // 4. Validate against Schema
+    const validated = ReviewSchema.safeParse(jsonParsed);
+    if (!validated.success) {
+      console.error("Review Validation Failed:", validated.error.format());
+      throw new Error("AI output failed structural validation");
+    }
+
+    return {
+      success: true,
+      data: validated.data,
+      metadata: {
+        model: "kimi-k2-instruct",
+        timestamp: new Date().toISOString(),
+        isTruncated: codeContent.length > MAX_CHAR_LIMIT
+      }
+    };
+
+  } catch (error) {
+    console.error("CodeReview Error:", error.message);
+    
+    return {
+      success: false,
+      error: error.message || "Code review service unavailable",
+      fallback_score: 0
+    };
+  }
+    
+
 }
